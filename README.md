@@ -74,10 +74,12 @@ Initialize a Supabase Project and obtain your Project URL and Anon Key.
 2. Installation
 Clone the repository and fetch the required packages:
 
-Bash
-git clone https://github.com/YOUR_USERNAME/aurasync_ai.git
-cd aurasync_ai
-flutter pub get
+//Bash
+//git clone https://github.com/YOUR_USERNAME/aurasync_ai.git
+//cd aurasync_ai
+//flutter pub get
+
+(Don't include the // in starting)
 
 3. Running the Project
 Use the following command to launch the app on your connected device/emulator. Replace the placeholders with your actual credentials:
