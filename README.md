@@ -97,6 +97,7 @@ swarm_broadcasts (id, s2_cell_id, message, scheduled_time, status, ttl_expiry)
 Ensure that Realtime (Replication) is toggled ON for the swarm_broadcasts table in your Supabase dashboard settings.
 
 4. Run the Project
+
 Bash
 flutter run
 
