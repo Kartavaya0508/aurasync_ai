@@ -1,40 +1,100 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import '../services/s2_helper.dart';
 
-class LeaderboardScreen extends StatelessWidget {
+class LeaderboardScreen extends StatefulWidget {
   const LeaderboardScreen({super.key});
 
-  Future<List<Map<String, dynamic>>> _getFullLeaderboard() async {
-    final supabase = Supabase.instance.client;
-    try {
-      final response = await supabase
-          .from('waste_items')
-          .select('eco_points, profiles(display_name)')
-          .eq('is_collected', true);
+  @override
+  State<LeaderboardScreen> createState() => _LeaderboardScreenState();
+}
 
-      Map<String, int> userTotals = {};
-      for (var row in response) {
-        final profileData = row['profiles'];
-        String name = "Anonymous";
-        if (profileData != null) {
-          name = (profileData is List)
-              ? profileData[0]['display_name']
-              : profileData['display_name'];
+class _LeaderboardScreenState extends State<LeaderboardScreen> {
+  final _supabase = Supabase.instance.client;
+  bool _isLoading = true;
+  List<Map<String, dynamic>> _localRankings = [];
+  String _currentSectorName = "Detecting...";
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRegionalRankings();
+  }
+
+  Future<void> _loadRegionalRankings() async {
+    setState(() => _isLoading = true);
+    try {
+      String? localS2Token;
+
+      // 1. Gather exact device location coordinates securely
+      try {
+        bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        if (serviceEnabled) {
+          LocationPermission permission = await Geolocator.checkPermission();
+          if (permission == LocationPermission.denied) {
+            permission = await Geolocator.requestPermission();
+          }
+          if (permission == LocationPermission.always ||
+              permission == LocationPermission.whileInUse) {
+            Position pos = await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.medium,
+            );
+            localS2Token = S2Helper.generateLevel14Token(
+              pos.latitude,
+              pos.longitude,
+            ).toLowerCase().trim();
+          }
         }
-        userTotals[name] = (userTotals[name] ?? 0) + (row['eco_points'] as int);
+      } catch (geoError) {
+        debugPrint("Location access bypassed: $geoError");
       }
 
-      var sorted = userTotals.entries.toList()
+      // 2. Query verified materials matching our local geographic block token
+      var query = _supabase
+          .from('waste_items')
+          .select('eco_points, s2_cell_id, profiles(display_name)')
+          .eq('status', 'COLLECTED');
+
+      if (localS2Token != null) {
+        query = query.eq('s2_cell_id', localS2Token);
+        final safeToken =
+            localS2Token; // Null-safety extraction for the compiler
+        setState(() {
+          _currentSectorName = safeToken.toUpperCase().replaceAll('S2_14_', '');
+        });
+      } else {
+        setState(() {
+          _currentSectorName = "GLOBAL (Location Unavailable)";
+        });
+      }
+
+      final response = await query;
+
+      // 3. Aggregate points per unique citizen profile row cleanly
+      Map<String, int> localAggregation = {};
+      for (var row in response) {
+        final profileData = row['profiles'];
+        String name = profileData != null
+            ? profileData['display_name'] ?? "Anonymous"
+            : "Anonymous";
+        localAggregation[name] =
+            (localAggregation[name] ?? 0) + (row['eco_points'] as num).toInt();
+      }
+
+      // 4. Sort from highest score value downwards
+      var sortedList = localAggregation.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
 
-      // Return top 100
-      return sorted
-          .take(100)
-          .map((e) => {'name': e.key, 'points': e.value})
-          .toList();
+      setState(() {
+        _localRankings = sortedList
+            .map((e) => {'name': e.key, 'points': e.value})
+            .toList();
+        _isLoading = false;
+      });
     } catch (e) {
-      print("Leaderboard Error: $e");
-      return [];
+      debugPrint("Regional Leaderboard Sync Fault: $e");
+      setState(() => _isLoading = false);
     }
   }
 
@@ -44,109 +104,117 @@ class LeaderboardScreen extends StatelessWidget {
       backgroundColor: Colors.black,
       appBar: AppBar(
         title: const Text(
-          "Local Leaderboard",
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          "Sector Standings",
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
         ),
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
         elevation: 0,
       ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: _getFullLeaderboard(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(
+      body: _isLoading
+          ? const Center(
               child: CircularProgressIndicator(color: Color(0xFF00E676)),
-            );
-          }
-
-          final leaders = snapshot.data ?? [];
-
-          return Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(20),
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF00E676).withOpacity(0.05),
-                  border: const Border(
-                    bottom: BorderSide(color: Colors.white10, width: 1),
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.group_work_outlined,
-                      color: Color(0xFF00E676),
-                      size: 18,
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A1A1A),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: const Color(0xFF00E676).withOpacity(0.2),
                     ),
-                    const SizedBox(width: 10),
-                    Text(
-                      "Syncing ${leaders.length} neighbors in your area",
-                      style: const TextStyle(
-                        color: Color(0xFF00E676),
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-
-              Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 10,
                   ),
-                  itemCount: leaders.length,
-                  itemBuilder: (context, i) {
-                    return Container(
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                      decoration: BoxDecoration(
-                        color:
-                            leaders[i]['name'] ==
-                                "Kartavaya" // Highlight you if needed
-                            ? const Color(0xFF00E676).withOpacity(0.1)
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: Colors.grey[900],
-                          child: Text(
-                            "${i + 1}",
-                            style: const TextStyle(
-                              color: Color(0xFF00E676),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Text(
-                          leaders[i]['name'],
+                  child: Row(
+                    children: [
+                      const Icon(Icons.gite_outlined, color: Color(0xFF00E676)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          "TRACKING SECTOR ZONE: #$_currentSectorName",
                           style: const TextStyle(
                             color: Colors.white,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        trailing: Text(
-                          "${leaders[i]['points']} pts",
-                          style: const TextStyle(
-                            color: Colors.white70,
                             fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                            letterSpacing: 0.5,
                           ),
                         ),
                       ),
-                    );
-                  },
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          );
-        },
-      ),
+                Expanded(
+                  child: _localRankings.isEmpty
+                      ? const Center(
+                          child: Text(
+                            "No collections completed inside this sector block.",
+                            style: TextStyle(
+                              color: Colors.white30,
+                              fontSize: 13,
+                            ),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          itemCount: _localRankings.length,
+                          itemBuilder: (context, index) {
+                            final citizen = _localRankings[index];
+                            final int rank = index + 1;
+
+                            return Container(
+                              margin: const EdgeInsets.symmetric(vertical: 6),
+                              padding: const EdgeInsets.all(18),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1A1A1A),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    "#$rank",
+                                    style: TextStyle(
+                                      color: rank == 1
+                                          ? const Color(0xFF00E676)
+                                          : Colors.grey,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Text(
+                                      citizen['name'],
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w500,
+                                        fontSize: 15,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    "${citizen['points']} pts",
+                                    style: const TextStyle(
+                                      color: Color(0xFF00E676),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
     );
   }
 }
