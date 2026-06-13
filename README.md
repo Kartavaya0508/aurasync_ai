@@ -73,7 +73,9 @@ Initialize a Supabase Project and obtain your Project URL and Anon Key.
 Bash
 
 git clone https://github.com/YOUR_USERNAME/aurasync_ai.git
+
 cd aurasync_ai
+
 flutter pub get
 
 2. Environment Setup (Crucial)
