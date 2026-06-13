@@ -82,9 +82,13 @@ flutter pub get
 Create a file named exactly .env in the root directory of the project (at the same level as pubspec.yaml). Add your credentials:
 
 Code snippet
+
 SUPABASE_URL=your_actual_supabase_project_url
+
 SUPABASE_ANON_KEY=your_actual_supabase_anon_key
+
 GEMINI_API_KEY=your_actual_gemini_api_key
+
 (Note: The .env file is intentionally ignored by git to protect your keys).
 
 3. Database Schema Requirements
