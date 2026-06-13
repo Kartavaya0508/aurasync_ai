@@ -1,4 +1,4 @@
-🌿 AuraSync AI: Community-Driven Waste Intelligence
+### 🌿 AuraSync AI: Community-Driven Waste Intelligence
 
 AuraSync AI is a professional-grade mobile application designed to bridge the gap between individual waste disposal and municipal logistics. By leveraging Google Gemini AI for instant classification and Supabase Realtime for geospatial syncing, AuraSync transforms passive waste management into an active, gamified community ecosystem.
 
@@ -99,6 +99,7 @@ Ensure that Realtime (Replication) is toggled ON for the swarm_broadcasts table 
 4. Run the Project
 
 Bash
+
 flutter run
 
 👥 Core Team
