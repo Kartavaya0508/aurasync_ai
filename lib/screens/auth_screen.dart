@@ -26,6 +26,24 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isSignUp = false;
   bool _isAdminRole = false;
 
+  // --- HELPER: CLEAN ERROR MESSAGES ---
+  String _getReadableErrorMessage(dynamic e) {
+    if (e is AuthException) {
+      if (e.message.toLowerCase().contains('invalid login credentials')) {
+        return "Incorrect email or password. Please try again.";
+      }
+      return e.message;
+    }
+
+    String errorStr = e.toString();
+    if (errorStr.contains('Invalid login credentials') ||
+        errorStr.contains('invalid_credentials')) {
+      return "Incorrect email or password. Please try again.";
+    }
+
+    return errorStr.replaceFirst('Exception: ', '');
+  }
+
   // --- LOCATION SECURITY GATEWAY ---
   Future<void> _routeToDashboard() async {
     setState(() => _isLoading = true);
@@ -145,7 +163,12 @@ class _AuthScreenState extends State<AuthScreen> {
       await googleSignIn.initialize(serverClientId: webClientId);
 
       final googleUser = await googleSignIn.authenticate();
-      final googleAuth = googleUser.authentication;
+      if (googleUser == null) {
+        if (mounted) setState(() => _isLoading = false);
+        return; // User canceled the sign-in flow
+      }
+
+      final googleAuth = await googleUser.authentication;
       final idToken = googleAuth.idToken;
 
       if (idToken == null) {
@@ -231,7 +254,7 @@ class _AuthScreenState extends State<AuthScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("Google Sign-In Error: $e"),
+            content: Text(_getReadableErrorMessage(e)),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -355,7 +378,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text("$e"),
+                                  content: Text(_getReadableErrorMessage(e)),
                                   backgroundColor: Colors.redAccent,
                                 ),
                               );
@@ -520,7 +543,10 @@ class _AuthScreenState extends State<AuthScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("$e"), backgroundColor: Colors.redAccent),
+          SnackBar(
+            content: Text(_getReadableErrorMessage(e)),
+            backgroundColor: Colors.redAccent,
+          ),
         );
       }
     } finally {
@@ -617,7 +643,10 @@ class _AuthScreenState extends State<AuthScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("$e"), backgroundColor: Colors.redAccent),
+          SnackBar(
+            content: Text(_getReadableErrorMessage(e)),
+            backgroundColor: Colors.redAccent,
+          ),
         );
       }
       if (mounted) setState(() => _isLoading = false);
@@ -711,7 +740,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text("Error: ${e.toString()}"),
+                                  content: Text(_getReadableErrorMessage(e)),
                                   backgroundColor: Colors.redAccent,
                                 ),
                               );
@@ -876,10 +905,8 @@ class _AuthScreenState extends State<AuthScreen> {
                           } catch (e) {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    "Error: Invalid OTP or Weak Password",
-                                  ),
+                                SnackBar(
+                                  content: Text(_getReadableErrorMessage(e)),
                                   backgroundColor: Colors.redAccent,
                                 ),
                               );
@@ -1031,7 +1058,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       ? const CircularProgressIndicator(color: Colors.black)
                       : Text(
                           _isAdminRole
-                              ? "AUTHORIZE LOGON"
+                              ? "AUTHORIZE LOGIN" // <-- Changed text
                               : (_isSignUp ? "REGISTER ACCOUNT" : "SIGN IN"),
                           style: const TextStyle(
                             color: Colors.black,
