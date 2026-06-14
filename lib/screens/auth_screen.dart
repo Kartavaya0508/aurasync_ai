@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:geolocator/geolocator.dart'; // NEW: Added for permission gateway
 import 'dashboard_screen.dart';
 import 'collector_dashboard_screen.dart';
 
@@ -25,7 +26,115 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isSignUp = false;
   bool _isAdminRole = false;
 
-  // --- Native Google Sign-In Flow with Database Sync & Progressive Onboarding ---
+  // --- LOCATION SECURITY GATEWAY ---
+  Future<void> _routeToDashboard() async {
+    setState(() => _isLoading = true);
+
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      setState(() => _isLoading = false);
+      _showLocationRequirementDialog(
+        "Location services are disabled. Please enable GPS to map Swarm sectors.",
+      );
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        setState(() => _isLoading = false);
+        _showLocationRequirementDialog(
+          "AuraSync strictly requires location access to log waste correctly.",
+        );
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      setState(() => _isLoading = false);
+      _showLocationRequirementDialog(
+        "Location permissions are permanently denied. Open App Settings to grant access.",
+        isPermanent: true,
+      );
+      return;
+    }
+
+    // Proceed to Dashboard ONLY if permissions are granted
+    if (mounted) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => _isAdminRole
+              ? const CollectorDashboardScreen()
+              : DashboardScreen(cameras: widget.cameras),
+        ),
+      );
+    }
+  }
+
+  // --- UN-DISMISSIBLE LOCATION BLOCKER ---
+  void _showLocationRequirementDialog(
+    String message, {
+    bool isPermanent = false,
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Row(
+          children: [
+            Icon(Icons.location_off, color: Colors.redAccent),
+            SizedBox(width: 10),
+            Text(
+              "Location Required",
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ],
+        ),
+        content: Text(message, style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Supabase.instance.client.auth.signOut();
+              await GoogleSignIn.instance.signOut();
+              if (context.mounted) {
+                Navigator.pop(context);
+                setState(() => _isLoading = false);
+              }
+            },
+            child: const Text(
+              "Cancel Login",
+              style: TextStyle(color: Colors.grey),
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E676),
+            ),
+            onPressed: () async {
+              if (isPermanent) {
+                await Geolocator.openAppSettings();
+              } else {
+                Navigator.pop(context);
+                _routeToDashboard();
+              }
+            },
+            child: Text(
+              isPermanent ? "Open Settings" : "Try Again",
+              style: const TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- Native Google Sign-In Flow ---
   Future<void> _handleThirdPartyGoogleAuth() async {
     setState(() => _isLoading = true);
     try {
@@ -56,6 +165,7 @@ class _AuthScreenState extends State<AuthScreen> {
             .from('profiles')
             .select('role, trust_score, display_name')
             .eq('id', response.user!.id)
+            .limit(1)
             .maybeSingle();
 
         if (profileRow == null) {
@@ -80,6 +190,7 @@ class _AuthScreenState extends State<AuthScreen> {
             .from('profiles')
             .select('role, trust_score, phone, address')
             .eq('id', response.user!.id)
+            .limit(1)
             .single();
 
         final String assignedRole = verifiedProfile['role'] ?? 'user';
@@ -107,14 +218,8 @@ class _AuthScreenState extends State<AuthScreen> {
             _showCompleteProfileDialog(response.user!.id);
             return;
           } else {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => _isAdminRole
-                    ? const CollectorDashboardScreen()
-                    : DashboardScreen(cameras: widget.cameras),
-              ),
-            );
+            // TRIGGER THE GATEWAY
+            await _routeToDashboard();
           }
         }
       }
@@ -136,7 +241,6 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  // --- Force Google Users to input Phone & Address ---
   void _showCompleteProfileDialog(String userId) {
     final phoneCtrl = TextEditingController();
     final addressCtrl = TextEditingController();
@@ -223,6 +327,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                 .from('profiles')
                                 .select('trust_score')
                                 .eq('phone', phoneCtrl.text.trim())
+                                .limit(1)
                                 .maybeSingle();
 
                             if (existingBannedPhone != null &&
@@ -243,16 +348,8 @@ class _AuthScreenState extends State<AuthScreen> {
 
                             if (context.mounted) {
                               Navigator.pop(context);
-                              Navigator.pushReplacement(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => _isAdminRole
-                                      ? const CollectorDashboardScreen()
-                                      : DashboardScreen(
-                                          cameras: widget.cameras,
-                                        ),
-                                ),
-                              );
+                              // TRIGGER THE GATEWAY
+                              await _routeToDashboard();
                             }
                           } catch (e) {
                             if (context.mounted) {
@@ -379,7 +476,6 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  // --- Standard Signup with Phone Ban Check ---
   Future<void> _executeSupabaseSignup() async {
     final supabase = Supabase.instance.client;
     final targetPhone = _phoneController.text.trim();
@@ -389,6 +485,7 @@ class _AuthScreenState extends State<AuthScreen> {
           .from('profiles')
           .select('trust_score')
           .eq('phone', targetPhone)
+          .limit(1)
           .maybeSingle();
 
       if (existingBannedPhone != null) {
@@ -431,7 +528,6 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  // --- UPDATED: Standard Login with Global Phone Ban Enforcement ---
   Future<void> _handleAuth() async {
     if (_emailController.text.trim().isEmpty ||
         _passwordController.text.trim().isEmpty) {
@@ -472,11 +568,11 @@ class _AuthScreenState extends State<AuthScreen> {
         );
 
         if (response.user != null) {
-          // Fetch role, trust score, AND phone number for cross-referencing
           final profileRow = await supabase
               .from('profiles')
               .select('role, trust_score, phone')
               .eq('id', response.user!.id)
+              .limit(1)
               .maybeSingle();
 
           final String assignedRole = profileRow?['role'] ?? 'user';
@@ -484,18 +580,17 @@ class _AuthScreenState extends State<AuthScreen> {
           final String? userPhone = profileRow?['phone'];
           final String expectedRole = _isAdminRole ? 'collector_admin' : 'user';
 
-          // 1. Direct Ban Check (By Account ID)
           if (trustScore <= 0) {
             await supabase.auth.signOut();
             throw "Access Terminated. Your profile has been permanently suspended due to repeated fraudulent waste logging violations.";
           }
 
-          // 2. Global Phone Ban Check (Primary Criteria Check)
           if (userPhone != null && userPhone.isNotEmpty) {
             final globalPhoneCheck = await supabase
                 .from('profiles')
                 .select('trust_score')
                 .eq('phone', userPhone)
+                .limit(1)
                 .maybeSingle();
 
             if (globalPhoneCheck != null) {
@@ -508,21 +603,14 @@ class _AuthScreenState extends State<AuthScreen> {
             }
           }
 
-          // 3. Role Gatekeeping Check
           if (assignedRole != expectedRole) {
             await supabase.auth.signOut();
             throw "Access Denied. Identity parameters do not match requested gateway portal rules.";
           }
 
           if (mounted) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => _isAdminRole
-                    ? const CollectorDashboardScreen()
-                    : DashboardScreen(cameras: widget.cameras),
-              ),
-            );
+            // TRIGGER THE GATEWAY
+            await _routeToDashboard();
           }
         }
       }

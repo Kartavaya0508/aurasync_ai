@@ -314,11 +314,40 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _analyzeImage(XFile image) async {
     setState(() => _isProcessing = true);
     try {
-      // NEW: Fetching the Gemini Key securely from the .env file
+      final apiKey = dotenv.env['GEMINI_API_KEY'];
+
+      // 1. Explicitly check if the key exists before doing anything
+      if (apiKey == null || apiKey.trim().isEmpty) {
+        throw "GEMINI_API_KEY is missing or empty in your .env file!";
+      }
+
+      // 2. FETCH THE DYNAMIC MODEL FROM SUPABASE
+      String activeModelString = 'gemini-2.5-flash-lite'; // Fallback default
+      try {
+        final configResponse = await Supabase.instance.client
+            .from('app_settings')
+            .select('active_gemini_model')
+            .eq('id', 1)
+            .maybeSingle();
+
+        if (configResponse != null &&
+            configResponse['active_gemini_model'] != null) {
+          activeModelString = configResponse['active_gemini_model'] as String;
+        }
+      } catch (dbError) {
+        debugPrint(
+          "Failed to fetch model from Supabase, using fallback: $dbError",
+        );
+      }
+
+      debugPrint("INITIALIZING GEMINI WITH MODEL: $activeModelString");
+
+      // 3. INITIALIZE GEMINI WITH THE DYNAMIC STRING
       final model = GenerativeModel(
-        model: 'gemini-2.5-flash-lite',
-        apiKey: dotenv.env['GEMINI_API_KEY']!,
+        model: activeModelString,
+        apiKey: apiKey.trim(),
       );
+
       final imageBytes = await File(image.path).readAsBytes();
 
       final prompt = TextPart("""
@@ -372,6 +401,16 @@ class _CameraScreenState extends State<CameraScreen> {
       }
     } catch (e) {
       debugPrint("Core Analysis Engine Error: $e");
+      // This will force a red popup to appear with the exact error
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Scan Failed: $e"),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }

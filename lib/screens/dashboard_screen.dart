@@ -9,10 +9,10 @@ import 'camera_screen.dart';
 import 'swarm_map_screen.dart';
 import 'profile_screen.dart';
 import 'leaderboard_screen.dart';
+import 'auth_screen.dart'; // NEW: Imported to route back on sign out
 import '../services/s2_helper.dart';
 import 'package:timezone/timezone.dart' as tz;
 
-// NEW: Added WidgetsBindingObserver to detect when the app is minimized and reopened
 class DashboardScreen extends StatefulWidget {
   final List<CameraDescription> cameras;
   const DashboardScreen({super.key, required this.cameras});
@@ -43,34 +43,127 @@ class _DashboardScreenState extends State<DashboardScreen>
   RealtimeChannel? _realtimeSubscription;
   String? _currentUserS2Token;
 
-  // State variable to track if the banner text is expanded or collapsed
   bool _isBannerExpanded = false;
+  bool _isLocationDialogShowing =
+      false; // Tracks if the location blocker is open
 
   List<Map<String, dynamic>> _userPendingScans = [];
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(
-      this,
-    ); // Start listening to app open/close
+    WidgetsBinding.instance.addObserver(this);
     _loadAllData();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this); // Stop listening
+    WidgetsBinding.instance.removeObserver(this);
     _realtimeSubscription?.unsubscribe();
     super.dispose();
   }
 
   // --- APP LIFECYCLE LISTENER ---
-  // If the user clicks 'X', minimizes the app, and reopens it, this brings the banner back!
+  // If user opens app settings to grant location, returning triggers this!
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadAllData();
     }
+  }
+
+  // --- LOCATION ENFORCEMENT BLOCKER ---
+  void _enforceLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showLocationBlocker(
+        "Location services are disabled. Please enable GPS to load your local Swarm data.",
+      );
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        _showLocationBlocker(
+          "AuraSync strictly requires location access to map waste correctly.",
+        );
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      _showLocationBlocker(
+        "Location permissions are permanently denied. Open App Settings to grant access.",
+        isPermanent: true,
+      );
+      return;
+    }
+
+    // Try loading again if everything passes!
+    _loadAllData();
+  }
+
+  void _showLocationBlocker(String message, {bool isPermanent = false}) {
+    if (_isLocationDialogShowing) return; // Prevent stacking
+    _isLocationDialogShowing = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Row(
+          children: [
+            Icon(Icons.location_off, color: Colors.redAccent),
+            SizedBox(width: 10),
+            Text(
+              "Location Required",
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ],
+        ),
+        content: Text(message, style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Supabase.instance.client.auth.signOut();
+              if (context.mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AuthScreen(cameras: widget.cameras),
+                  ),
+                  (route) => false,
+                );
+              }
+            },
+            child: const Text("Sign Out", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E676),
+            ),
+            onPressed: () async {
+              if (isPermanent) {
+                await Geolocator.openAppSettings();
+              } else {
+                Navigator.pop(context);
+                _enforceLocation();
+              }
+            },
+            child: Text(
+              isPermanent ? "Open Settings" : "Retry",
+              style: const TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ).then((_) => _isLocationDialogShowing = false);
   }
 
   // --- BULLETPROOF REALTIME LISTENER ---
@@ -103,8 +196,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 if (mounted) {
                   setState(() {
                     _activeBroadcastAlert = newAlertData;
-                    _isBannerExpanded =
-                        false; // Reset to collapsed when a new alert arrives
+                    _isBannerExpanded = false;
                   });
 
                   if (newAlertData['scheduled_time'] != null) {
@@ -204,6 +296,24 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (!mounted) return;
     setState(() => _isLoading = true);
 
+    // --- STRICT LOCATION ENFORCEMENT CHECK ---
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    LocationPermission permission = await Geolocator.checkPermission();
+
+    if (!serviceEnabled ||
+        permission == LocationPermission.denied ||
+        permission == LocationPermission.deniedForever) {
+      _enforceLocation();
+      return; // Stops all data loading until GPS is allowed
+    } else {
+      // If permission was granted and the blocker dialog is open, auto-close it!
+      if (_isLocationDialogShowing && mounted) {
+        Navigator.of(context, rootNavigator: true).pop();
+        _isLocationDialogShowing = false;
+      }
+    }
+    // -----------------------------------------
+
     String fetchedName = "Eco Neighbor";
     String? fetchedAvatar;
     double pKg = 0.0;
@@ -227,25 +337,16 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     String? localToken;
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (serviceEnabled) {
-        LocationPermission permission = await Geolocator.checkPermission();
-        if (permission == LocationPermission.denied) {
-          permission = await Geolocator.requestPermission();
-        }
-        if (permission == LocationPermission.always ||
-            permission == LocationPermission.whileInUse) {
-          Position pos = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.medium,
-          );
-          localToken = S2Helper.generateLevel14Token(
-            pos.latitude,
-            pos.longitude,
-          ).toLowerCase().trim();
+      // Safe to call because we enforced it above
+      Position pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+      );
+      localToken = S2Helper.generateLevel14Token(
+        pos.latitude,
+        pos.longitude,
+      ).toLowerCase().trim();
 
-          _currentUserS2Token = localToken;
-        }
-      }
+      _currentUserS2Token = localToken;
     } catch (e) {
       debugPrint("Location Init Error: $e");
     }
@@ -315,7 +416,6 @@ class _DashboardScreenState extends State<DashboardScreen>
             if (b['scheduled_time'] != null) {
               if (b['ttl_expiry'] != null) {
                 DateTime expiryDate = DateTime.parse(b['ttl_expiry']);
-                // Disappears permanently when time passes!
                 if (DateTime.now().isAfter(expiryDate)) {
                   _expireBroadcast(b['id'].toString());
                   continue;
@@ -417,7 +517,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         _localLeaders = leaders;
         _userPendingScans = pendings;
         _isLoading = false;
-        // Ensure banner starts collapsed on reload
         _isBannerExpanded = false;
       });
     }
@@ -560,8 +659,6 @@ class _DashboardScreenState extends State<DashboardScreen>
 
                       const SizedBox(height: 20),
 
-                      // --- EXPANDABLE IN-LINE REALTIME BANNER ---
-                      // Sits perfectly below the header and above the Impact Card
                       if (_activeBroadcastAlert != null)
                         GestureDetector(
                           onTap: () {
@@ -614,7 +711,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                                         ),
                                       ),
                                       const SizedBox(height: 6),
-                                      // Smoothly expands text length on tap
                                       AnimatedSize(
                                         duration: const Duration(
                                           milliseconds: 250,
@@ -651,7 +747,6 @@ class _DashboardScreenState extends State<DashboardScreen>
                                     ],
                                   ),
                                 ),
-                                // Click 'X' to hide it for this session. It will return when app restarts!
                                 IconButton(
                                   icon: const Icon(
                                     Icons.close,
